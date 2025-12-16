@@ -162,31 +162,32 @@ jobs:
       if: always()
       run: |
         if [ "${{ matrix.task }}" = "1" ]; then
-          # Парсим баллы из autograding результатов для задачи 1
+          echo "Парсим результаты для задачи 1"
           python3 tools/parse_scores.py 1 \
             "${{ steps.task1_add.outputs.result }}" \
             "${{ steps.task1_sub.outputs.result }}" \
             "${{ steps.task1_div_zero.outputs.result }}" > task_score.txt
-          
+
         elif [ "${{ matrix.task }}" = "2" ]; then
-          # Для задачи 2
-          python3 tools/parse_scores.py 2 > task_score.txt
-          
+          echo "Парсим результаты для задачи 2"
+          python3 tools/parse_scores.py 2 \
+            "${{ steps.task2_simple.outputs.result }}" \
+            "${{ steps.task2_not_palindrome.outputs.result }}" \
+            "${{ steps.task2_empty.outputs.result }}" > task_score.txt
+
         elif [ "${{ matrix.task }}" = "3" ]; then
-          # Для задачи 3
-          python3 tools/parse_scores.py 3 > task_score.txt
+          echo "Парсим результаты для задачи 3"
+          python3 tools/parse_scores.py 3 \
+            "${{ steps.task3_fib0.outputs.result }}" \
+            "${{ steps.task3_fib1.outputs.result }}" \
+            "${{ steps.task3_fib10.outputs.result }}" > task_score.txt
         fi
-        
-        # echo "Task ${{ matrix.task }} score: $SCORE"
-        echo "Task ${{ matrix.task }} score:"
+
+        echo "Содержимое task_score.txt:"
         cat task_score.txt
-    
-    - name: Upload Score Artifact
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: score-task-${{ matrix.task }}
-        path: task_score.txt
+
+        # Сохраняем также отдельный файл с идентификатором задачи
+        echo "TASK=${{ matrix.task }}" >> task_${{ matrix.task }}_info.txt
 
   # JOB: СБОРКА ИТОГОВОЙ СВОДКИ
   generate-final-report:
@@ -194,11 +195,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: run-autograding-tests
     if: always()
-    
+
     steps:
     - name: Checkout code again
       uses: actions/checkout@v4
-    
+
     - name: Download all score artifacts
       uses: actions/download-artifact@v4
       with:
@@ -213,30 +214,35 @@ jobs:
         TASK1_SCORE=0
         TASK2_SCORE=0
         TASK3_SCORE=0
-        
+
         # Читаем баллы из файлов
-        for file in $(find ./artifacts -name "task_score.txt"); do
-          score=$(cat "$file" | grep "TASK_SCORE=" | cut -d'=' -f2)
-          score=${score:-0}
-          
-          if [[ "$file" == *"task-1"* ]]; then
+        echo "Поиск файлов с баллами..."
+        find ./artifacts -type f -name "*.txt" | while read file; do
+          echo "Проверяем файл: $file"
+          if [[ "$file" == *"task-1"* ]] || grep -q "TASK=1" "$file"; then
+            score=$(grep -oP 'TASK_SCORE=\K\d+' "$file" || echo "0")
             TASK1_SCORE=$score
-          elif [[ "$file" == *"task-2"* ]]; then
+            echo "Найден Task 1: $score"
+          elif [[ "$file" == *"task-2"* ]] || grep -q "TASK=2" "$file"; then
+            score=$(grep -oP 'TASK_SCORE=\K\d+' "$file" || echo "0")
             TASK2_SCORE=$score
-          elif [[ "$file" == *"task-3"* ]]; then
+            echo "Найден Task 2: $score"
+          elif [[ "$file" == *"task-3"* ]] || grep -q "TASK=3" "$file"; then
+            score=$(grep -oP 'TASK_SCORE=\K\d+' "$file" || echo "0")
             TASK3_SCORE=$score
+            echo "Найден Task 3: $score"
           fi
         done
-        
-        # Если Task 1 прошел все 3 теста по 10 баллов каждый, должно быть 30
-        if [ "$TASK1_SCORE" -lt 30 ] && [ -f "task_01.py" ]; then
-          # Проверяем, может быть студент сдал не все тесты
-          # Но если файл есть, даем минимум 10
-          TASK1_SCORE=$((TASK1_SCORE > 0 ? TASK1_SCORE : 10))
+
+        # Запасной вариант: проверка файлов
+        if [ -f "task_01.py" ] && [ "$TASK1_SCORE" -eq 0 ]; then
+          # Если файл есть, но тесты не прошли, даем минимальные баллы за качество кода
+          echo "Файл task_01.py найден, присваиваем минимальные баллы"
+          TASK1_SCORE=10
         fi
-        
-        echo "Final scores: Task1=$TASK1_SCORE, Task2=$TASK2_SCORE, Task3=$TASK3_SCORE"
-        
+
+        echo "Итоговые баллы: Task1=$TASK1_SCORE, Task2=$TASK2_SCORE, Task3=$TASK3_SCORE"
+
         # Сохраняем в outputs
         echo "task1_score=$TASK1_SCORE" >> $GITHUB_OUTPUT
         echo "task2_score=$TASK2_SCORE" >> $GITHUB_OUTPUT
@@ -251,54 +257,68 @@ jobs:
         TASK3_SCORE=${{ steps.calculate.outputs.task3_score || 0 }}
         TOTAL_SCORE=${{ steps.calculate.outputs.total_score || 0 }}
         MAX_SCORE=${{ steps.calculate.outputs.max_score || 110 }}
-        
+
         # Расчет процента
         if [ "$MAX_SCORE" -gt 0 ]; then
           PERCENTAGE=$((TOTAL_SCORE * 100 / MAX_SCORE))
         else
           PERCENTAGE=0
         fi
-        
+
         # Генерация отчета
         echo "## 📊 ИТОГОВЫЙ ОТЧЕТ ПО ВСЕМ ЗАДАНИЯМ" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        
+
         echo "### 📈 Сводная таблица" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "| Задание | Баллы | Максимум | Статус |" >> $GITHUB_STEP_SUMMARY
         echo "|---------|-------|----------|--------|" >> $GITHUB_STEP_SUMMARY
-        echo "| **Задача 1: Калькулятор** | $TASK1_SCORE | 30 | $(if [ $TASK1_SCORE -ge 24 ]; then echo "✅"; elif [ $TASK1_SCORE -ge 18 ]; then echo "⚠️"; else echo "❌"; fi) |" >> $GITHUB_STEP_SUMMARY
-        echo "| **Задача 2: Палиндром** | $TASK2_SCORE | 40 | $(if [ $TASK2_SCORE -ge 32 ]; then echo "✅"; elif [ $TASK2_SCORE -ge 24 ]; then echo "⚠️"; else echo "❌"; fi) |" >> $GITHUB_STEP_SUMMARY
-        echo "| **Задача 3: Числа Фибоначчи** | $TASK3_SCORE | 40 | $(if [ $TASK3_SCORE -ge 32 ]; then echo "✅"; elif [ $TASK3_SCORE -ge 24 ]; then echo "⚠️"; else echo "❌"; fi) |" >> $GITHUB_STEP_SUMMARY
+
+        # Статусы с условиями
+        TASK1_STATUS="❌"
+        if [ $TASK1_SCORE -ge 25 ]; then
+          TASK1_STATUS="✅"
+        elif [ $TASK1_SCORE -ge 15 ]; then
+          TASK1_STATUS="⚠️"
+        fi
+
+        TASK2_STATUS="❌"
+        if [ $TASK2_SCORE -ge 32 ]; then
+          TASK2_STATUS="✅"
+        elif [ $TASK2_SCORE -ge 20 ]; then
+          TASK2_STATUS="⚠️"
+        fi
+
+        TASK3_STATUS="❌"
+        if [ $TASK3_SCORE -ge 32 ]; then
+          TASK3_STATUS="✅"
+        elif [ $TASK3_SCORE -ge 20 ]; then
+          TASK3_STATUS="⚠️"
+        fi
+
+        echo "| **Задача 1: Калькулятор** | $TASK1_SCORE | 30 | $TASK1_STATUS |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Задача 2: Палиндром** | $TASK2_SCORE | 40 | $TASK2_STATUS |" >> $GITHUB_STEP_SUMMARY
+        echo "| **Задача 3: Числа Фибоначчи** | $TASK3_SCORE | 40 | $TASK3_STATUS |" >> $GITHUB_STEP_SUMMARY
         echo "| **ВСЕГО** | **$TOTAL_SCORE** | **$MAX_SCORE** | **$PERCENTAGE%** |" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        
+
         echo "### 📁 Найденные файлы:" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        
-        if [ -f "task_01.py" ]; then
-          echo "✅ **task_01.py** - найден" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "❌ **task_01.py** - не найден" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        if [ -f "task_02.py" ]; then
-          echo "✅ **task_02.py** - найден" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "❌ **task_02.py** - не найден" >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        if [ -f "task_03.py" ]; then
-          echo "✅ **task_03.py** - найден" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "❌ **task_03.py** - не найден" >> $GITHUB_STEP_SUMMARY
-        fi
-        
+
+        # Проверка файлов
+        for file in task_01.py task_02.py task_03.py; do
+          if [ -f "$file" ]; then
+            echo "✅ **$file** - найден" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **$file** - не найден" >> $GITHUB_STEP_SUMMARY
+          fi
+        done
+
         echo "" >> $GITHUB_STEP_SUMMARY
-        
         echo "### 🏆 Итоговая оценка: **$TOTAL_SCORE / $MAX_SCORE**" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        
+
+        # Рекомендации
         if [ "$TOTAL_SCORE" -eq "$MAX_SCORE" ]; then
           echo "🎉 **ПОЗДРАВЛЯЕМ! Все задачи выполнены на 100%!**" >> $GITHUB_STEP_SUMMARY
         elif [ "$PERCENTAGE" -ge 80 ]; then
@@ -308,32 +328,17 @@ jobs:
         else
           echo "❌ **Нужно серьезно поработать над заданиями.**" >> $GITHUB_STEP_SUMMARY
         fi
-        
+
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "*Автоматическая проверка завершена* • $(date)" >> $GITHUB_STEP_SUMMARY
-    
+
     - name: Report to GitHub Classroom
       uses: classroom-resources/autograding-grading-reporter@v1
-      env:
-        TASK_01_RESULTS: '{"score": ${{ steps.calculate.outputs.task1_score || 0 }}, "max_score": 30}'
-        TASK_02_RESULTS: '{"score": ${{ steps.calculate.outputs.task2_score || 0 }}, "max_score": 40}'
-        TASK_03_RESULTS: '{"score": ${{ steps.calculate.outputs.task3_score || 0 }}, "max_score": 40}'
       with:
-        runners: task_01,task_02,task_03
-
-        # TASK_01_RESULTS: '{"points": ${{ steps.calculate.outputs.task1_score || 0 }}}'
-        # TASK_02_RESULTS: '{"points": ${{ steps.calculate.outputs.task2_score || 0 }}}'
-        # TASK_03_RESULTS: '{"points": ${{ steps.calculate.outputs.task3_score || 0 }}}'
-
-        # runners: "task_01:${{ steps.calculate.outputs.task1_score || 0 }},task_02:${{ steps.calculate.outputs.task2_score || 0 }},task_03:${{ steps.calculate.outputs.task3_score || 0 }}"
-        # runners: "task_01:${{ steps.calculate.outputs.task1_score }},task_02:${{ steps.calculate.outputs.task2_score }},task_03:${{ steps.calculate.outputs.task3_score }}"
-        # Попробуем JSON формат
-        # runners: |
-        #  [
-        #    {"name": "task_01", "points": ${{ steps.calculate.outputs.task1_score || 0 }}},
-        #    {"name": "task_02", "points": ${{ steps.calculate.outputs.task2_score || 0 }}},
-        #    {"name": "task_03", "points": ${{ steps.calculate.outputs.task3_score || 0 }}}
-        #  ]
+        runners: |
+          task_01:${{ steps.calculate.outputs.task1_score || 0 }}
+          task_02:${{ steps.calculate.outputs.task2_score || 0 }}
+          task_03:${{ steps.calculate.outputs.task3_score || 0 }}
 
   # JOB: АНАЛИЗ КАЧЕСТВА КОДА С ЛИНТЕРАМИ
   code-quality-analysis:
